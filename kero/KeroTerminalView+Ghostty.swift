@@ -4,6 +4,7 @@
 //
 
 import AppKit
+import CoreText
 import GhosttyTerminal
 import GhosttyTheme
 
@@ -68,6 +69,16 @@ extension KeroTerminalView {
             // Keep Kero's bundled icon font as a fallback after the selected
             // primary face. Repeated font-family entries form Ghostty's list.
             builder.withCustom("font-family", "Symbols Nerd Font Mono")
+            // CJK the primary face lacks must resolve through the OS locale
+            // cascade, not Ghostty's locale-blind generic search (which
+            // prefers large Chinese-shape faces and can flip between fresh
+            // and reconfigured surfaces). Resolving once here gives every
+            // surface the same explicit list.
+            for fallback in Self.cjkFallbackFamilies(
+                primary: family, size: CGFloat(settings.fontSize)
+            ) {
+                builder.withCustom("font-family", fallback)
+            }
             builder.withFontSize(Float(settings.fontSize))
             // Always set explicitly: the wrapper's ConfigSource.none base
             // config injects the package default `font-thicken = true`, and
@@ -144,6 +155,36 @@ extension KeroTerminalView {
             builder.withCustom("clipboard-write", "allow")
             builder.withCustom("clipboard-paste-protection", "true")
         }
+    }
+
+    /// CJK fallback families resolved through the OS cascade for the current
+    /// locale, deduplicated in probe order. Explicit families are matched by
+    /// coverage before Ghostty runs its own fallback search, so fresh and
+    /// live-reconfigured surfaces agree deterministically with no hardcoded
+    /// font names.
+    private static func cjkFallbackFamilies(primary: String, size: CGFloat) -> [String] {
+        let base = CTFontCreateWithName(primary as CFString, size, nil)
+        // One probe per script Ghostty would otherwise resolve through its
+        // locale-blind generic search: kana, CJK punctuation, Han, fullwidth
+        // forms, Hangul.
+        let probes: [UInt32] = [0x3042, 0x30A2, 0x3001, 0x6F22, 0xFF01, 0xAC00]
+        var seen: Set<String> = [primary, "Symbols Nerd Font Mono"]
+        var families: [String] = []
+        for codepoint in probes {
+            var uniChar = UniChar(codepoint)
+            guard let string = CFStringCreateWithCharacters(nil, &uniChar, 1) else {
+                continue
+            }
+            let resolved = CTFontCreateForString(base, string, CFRange(location: 0, length: 1))
+            guard
+                let family = CTFontCopyFamilyName(resolved) as String?,
+                !family.isEmpty,
+                CTFontCopyPostScriptName(resolved) as String? != "LastResort",
+                seen.insert(family).inserted
+            else { continue }
+            families.append(family)
+        }
+        return families
     }
 
     private static func ghosttyTheme() -> GhosttyTerminal.TerminalTheme {
